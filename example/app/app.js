@@ -102,7 +102,7 @@ module.exports = {
     parse: parse,
     Syntax: require("./union-syntax")
 };
-},{"./mapping/markdown-syntax-map":2,"./union-syntax":4,"debug":21,"remark":30,"structured-source":45,"traverse":48}],4:[function(require,module,exports){
+},{"./mapping/markdown-syntax-map":2,"./union-syntax":4,"debug":23,"remark":32,"structured-source":42,"traverse":44}],4:[function(require,module,exports){
 // LICENSE : MIT
 "use strict";
 // public key interface
@@ -129,6 +129,160 @@ var exports = {
 };
 module.exports = exports;
 },{}],5:[function(require,module,exports){
+/**
+ * @author Titus Wormer
+ * @copyright 2015 Titus Wormer
+ * @license MIT
+ * @module attach-ware
+ * @fileoverview Middleware with configuration.
+ * @example
+ *   var ware = require('attach-ware')(require('ware'));
+ *
+ *   var middleware = ware()
+ *     .use(function (context, options) {
+ *         if (!options.condition) return;
+ *
+ *         return function (req, res, next) {
+ *           res.x = 'hello';
+ *           next();
+ *         };
+ *     }, {
+ *         'condition': true
+ *     })
+ *     .use(function (context, options) {
+ *         if (!options.condition) return;
+ *
+ *         return function (req, res, next) {
+ *           res.y = 'world';
+ *           next();
+ *         };
+ *     }, {
+ *         'condition': false
+ *     });
+ *
+ *   middleware.run({}, {}, function (err, req, res) {
+ *     res.x; // "hello"
+ *     res.y; // undefined
+ *   });
+ */
+
+'use strict';
+
+/* eslint-env commonjs */
+
+var slice = [].slice;
+var unherit = require('unherit');
+
+/**
+ * Clone `Ware` without affecting the super-class and
+ * turn it into configurable middleware.
+ *
+ * @param {Function} Ware - Ware-like constructor.
+ * @return {Function} AttachWare - Configurable middleware.
+ */
+function patch(Ware) {
+    /*
+     * Methods.
+     */
+
+    var useFn = Ware.prototype.use;
+
+    /**
+     * @constructor
+     * @class {AttachWare}
+     */
+    var AttachWare = unherit(Ware);
+
+    AttachWare.prototype.foo = true;
+
+    /**
+     * Attach configurable middleware.
+     *
+     * @memberof {AttachWare}
+     * @this {AttachWare}
+     * @param {Function} attach - Attacher.
+     * @return {AttachWare} - `this`.
+     */
+    function use(attach) {
+        var self = this;
+        var params = slice.call(arguments, 1);
+        var index;
+        var length;
+        var fn;
+
+        /*
+         * Multiple attachers.
+         */
+
+        if ('length' in attach && typeof attach !== 'function') {
+            index = -1;
+            length = attach.length;
+
+            /*
+             * So, `attach[0]` is a function, meaning its
+             * either a list of `attachers` or its a `list`.
+             */
+
+            if (typeof attach[0] === 'function') {
+                if (
+                    (attach[1] !== null && attach[1] !== undefined) &&
+                    typeof attach[1] !== 'function'
+                ) {
+                    self.use.apply(self, attach);
+                } else {
+                    while (++index < length) {
+                        self.use.apply(self, [
+                            attach[index]
+                        ].concat(params));
+                    }
+                }
+            } else {
+                while (++index < length) {
+                    self.use(attach[index]);
+                }
+            }
+
+            return self;
+        }
+
+        /*
+         * Single attacher.
+         */
+
+        fn = attach.apply(null, [self.context || self].concat(params));
+
+        /*
+         * Store the attacher to not break `new Ware(otherWare)`
+         * functionality.
+         */
+
+        if (!self.attachers) {
+            self.attachers = [];
+        }
+
+        self.attachers.push(attach);
+
+        /*
+         * Pass `fn` to the original `Ware#use()`.
+         */
+
+        if (fn) {
+            useFn.call(self, fn);
+        }
+
+        return self;
+    }
+
+    AttachWare.prototype.use = use;
+
+    return function (fn) {
+        return new AttachWare(fn);
+    };
+}
+
+module.exports = patch;
+
+},{"unherit":47}],6:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer. All rights reserved.
@@ -166,7 +320,224 @@ function bail(err) {
 
 module.exports = bail;
 
-},{}],6:[function(require,module,exports){
+},{}],7:[function(require,module,exports){
+;(function (exports) {
+  'use strict'
+
+  var i
+  var code = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  var lookup = []
+  for (i = 0; i < code.length; i++) {
+    lookup[i] = code[i]
+  }
+  var revLookup = []
+
+  for (i = 0; i < code.length; ++i) {
+    revLookup[code.charCodeAt(i)] = i
+  }
+  revLookup['-'.charCodeAt(0)] = 62
+  revLookup['_'.charCodeAt(0)] = 63
+
+  var Arr = (typeof Uint8Array !== 'undefined')
+    ? Uint8Array
+    : Array
+
+  function decode (elt) {
+    var v = revLookup[elt.charCodeAt(0)]
+    return v !== undefined ? v : -1
+  }
+
+  function b64ToByteArray (b64) {
+    var i, j, l, tmp, placeHolders, arr
+
+    if (b64.length % 4 > 0) {
+      throw new Error('Invalid string. Length must be a multiple of 4')
+    }
+
+    // the number of equal signs (place holders)
+    // if there are two placeholders, than the two characters before it
+    // represent one byte
+    // if there is only one, then the three characters before it represent 2 bytes
+    // this is just a cheap hack to not do indexOf twice
+    var len = b64.length
+    placeHolders = b64.charAt(len - 2) === '=' ? 2 : b64.charAt(len - 1) === '=' ? 1 : 0
+
+    // base64 is 4/3 + up to two characters of the original data
+    arr = new Arr(b64.length * 3 / 4 - placeHolders)
+
+    // if there are placeholders, only get up to the last complete 4 chars
+    l = placeHolders > 0 ? b64.length - 4 : b64.length
+
+    var L = 0
+
+    function push (v) {
+      arr[L++] = v
+    }
+
+    for (i = 0, j = 0; i < l; i += 4, j += 3) {
+      tmp = (decode(b64.charAt(i)) << 18) | (decode(b64.charAt(i + 1)) << 12) | (decode(b64.charAt(i + 2)) << 6) | decode(b64.charAt(i + 3))
+      push((tmp & 0xFF0000) >> 16)
+      push((tmp & 0xFF00) >> 8)
+      push(tmp & 0xFF)
+    }
+
+    if (placeHolders === 2) {
+      tmp = (decode(b64.charAt(i)) << 2) | (decode(b64.charAt(i + 1)) >> 4)
+      push(tmp & 0xFF)
+    } else if (placeHolders === 1) {
+      tmp = (decode(b64.charAt(i)) << 10) | (decode(b64.charAt(i + 1)) << 4) | (decode(b64.charAt(i + 2)) >> 2)
+      push((tmp >> 8) & 0xFF)
+      push(tmp & 0xFF)
+    }
+
+    return arr
+  }
+
+  function encode (num) {
+    return lookup[num]
+  }
+
+  function tripletToBase64 (num) {
+    return encode(num >> 18 & 0x3F) + encode(num >> 12 & 0x3F) + encode(num >> 6 & 0x3F) + encode(num & 0x3F)
+  }
+
+  function encodeChunk (uint8, start, end) {
+    var temp
+    var output = []
+    for (var i = start; i < end; i += 3) {
+      temp = (uint8[i] << 16) + (uint8[i + 1] << 8) + (uint8[i + 2])
+      output.push(tripletToBase64(temp))
+    }
+    return output.join('')
+  }
+
+  function uint8ToBase64 (uint8) {
+    var i
+    var extraBytes = uint8.length % 3 // if we have 1 byte left, pad 2 bytes
+    var output = ''
+    var parts = []
+    var temp, length
+    var maxChunkLength = 16383 // must be multiple of 3
+
+    // go through the array every three bytes, we'll deal with trailing stuff later
+
+    for (i = 0, length = uint8.length - extraBytes; i < length; i += maxChunkLength) {
+      parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > length ? length : (i + maxChunkLength)))
+    }
+
+    // pad the end with zeros, but make sure to not forget the extra bytes
+    switch (extraBytes) {
+      case 1:
+        temp = uint8[uint8.length - 1]
+        output += encode(temp >> 2)
+        output += encode((temp << 4) & 0x3F)
+        output += '=='
+        break
+      case 2:
+        temp = (uint8[uint8.length - 2] << 8) + (uint8[uint8.length - 1])
+        output += encode(temp >> 10)
+        output += encode((temp >> 4) & 0x3F)
+        output += encode((temp << 2) & 0x3F)
+        output += '='
+        break
+      default:
+        break
+    }
+
+    parts.push(output)
+
+    return parts.join('')
+  }
+
+  exports.toByteArray = b64ToByteArray
+  exports.fromByteArray = uint8ToBase64
+}(typeof exports === 'undefined' ? (this.base64js = {}) : exports))
+
+},{}],8:[function(require,module,exports){
+"use strict";
+
+/*
+  Copyright (C) 2014 Yusuke Suzuki <utatane.tea@gmail.com>
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+  ARE DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
+function compare(v1, v2) {
+  return v1 < v2;
+}
+
+function upperBound(array, value, comp) {
+  if (comp === undefined) comp = compare;
+  return (function () {
+    var len = array.length;
+    var i = 0;
+
+    while (len) {
+      var diff = len >>> 1;
+      var cursor = i + diff;
+      if (comp(value, array[cursor])) {
+        len = diff;
+      } else {
+        i = cursor + 1;
+        len -= diff + 1;
+      }
+    }
+    return i;
+  })();
+}
+
+function lowerBound(array, value, comp) {
+  if (comp === undefined) comp = compare;
+  return (function () {
+    var len = array.length;
+    var i = 0;
+
+    while (len) {
+      var diff = len >>> 1;
+      var cursor = i + diff;
+      if (comp(array[cursor], value)) {
+        i = cursor + 1;
+        len -= diff + 1;
+      } else {
+        len = diff;
+      }
+    }
+    return i;
+  })();
+}
+
+function binarySearch(array, value, comp) {
+  if (comp === undefined) comp = compare;
+  return (function () {
+    var cursor = lowerBound(array, value, comp);
+    return cursor !== array.length && !comp(value, array[cursor]);
+  })();
+}
+
+exports.compare = compare;
+exports.lowerBound = lowerBound;
+exports.upperBound = upperBound;
+exports.binarySearch = binarySearch;
+
+},{}],9:[function(require,module,exports){
 (function (global){
 /*!
  * The buffer module from node.js, for the browser.
@@ -1632,147 +2003,14 @@ function blitBuffer (src, dst, offset, length) {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"base64-js":7,"ieee754":24,"isarray":8}],7:[function(require,module,exports){
-;(function (exports) {
-  'use strict'
-
-  var i
-  var code = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-  var lookup = []
-  for (i = 0; i < code.length; i++) {
-    lookup[i] = code[i]
-  }
-  var revLookup = []
-
-  for (i = 0; i < code.length; ++i) {
-    revLookup[code.charCodeAt(i)] = i
-  }
-  revLookup['-'.charCodeAt(0)] = 62
-  revLookup['_'.charCodeAt(0)] = 63
-
-  var Arr = (typeof Uint8Array !== 'undefined')
-    ? Uint8Array
-    : Array
-
-  function decode (elt) {
-    var v = revLookup[elt.charCodeAt(0)]
-    return v !== undefined ? v : -1
-  }
-
-  function b64ToByteArray (b64) {
-    var i, j, l, tmp, placeHolders, arr
-
-    if (b64.length % 4 > 0) {
-      throw new Error('Invalid string. Length must be a multiple of 4')
-    }
-
-    // the number of equal signs (place holders)
-    // if there are two placeholders, than the two characters before it
-    // represent one byte
-    // if there is only one, then the three characters before it represent 2 bytes
-    // this is just a cheap hack to not do indexOf twice
-    var len = b64.length
-    placeHolders = b64.charAt(len - 2) === '=' ? 2 : b64.charAt(len - 1) === '=' ? 1 : 0
-
-    // base64 is 4/3 + up to two characters of the original data
-    arr = new Arr(b64.length * 3 / 4 - placeHolders)
-
-    // if there are placeholders, only get up to the last complete 4 chars
-    l = placeHolders > 0 ? b64.length - 4 : b64.length
-
-    var L = 0
-
-    function push (v) {
-      arr[L++] = v
-    }
-
-    for (i = 0, j = 0; i < l; i += 4, j += 3) {
-      tmp = (decode(b64.charAt(i)) << 18) | (decode(b64.charAt(i + 1)) << 12) | (decode(b64.charAt(i + 2)) << 6) | decode(b64.charAt(i + 3))
-      push((tmp & 0xFF0000) >> 16)
-      push((tmp & 0xFF00) >> 8)
-      push(tmp & 0xFF)
-    }
-
-    if (placeHolders === 2) {
-      tmp = (decode(b64.charAt(i)) << 2) | (decode(b64.charAt(i + 1)) >> 4)
-      push(tmp & 0xFF)
-    } else if (placeHolders === 1) {
-      tmp = (decode(b64.charAt(i)) << 10) | (decode(b64.charAt(i + 1)) << 4) | (decode(b64.charAt(i + 2)) >> 2)
-      push((tmp >> 8) & 0xFF)
-      push(tmp & 0xFF)
-    }
-
-    return arr
-  }
-
-  function encode (num) {
-    return lookup[num]
-  }
-
-  function tripletToBase64 (num) {
-    return encode(num >> 18 & 0x3F) + encode(num >> 12 & 0x3F) + encode(num >> 6 & 0x3F) + encode(num & 0x3F)
-  }
-
-  function encodeChunk (uint8, start, end) {
-    var temp
-    var output = []
-    for (var i = start; i < end; i += 3) {
-      temp = (uint8[i] << 16) + (uint8[i + 1] << 8) + (uint8[i + 2])
-      output.push(tripletToBase64(temp))
-    }
-    return output.join('')
-  }
-
-  function uint8ToBase64 (uint8) {
-    var i
-    var extraBytes = uint8.length % 3 // if we have 1 byte left, pad 2 bytes
-    var output = ''
-    var parts = []
-    var temp, length
-    var maxChunkLength = 16383 // must be multiple of 3
-
-    // go through the array every three bytes, we'll deal with trailing stuff later
-
-    for (i = 0, length = uint8.length - extraBytes; i < length; i += maxChunkLength) {
-      parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > length ? length : (i + maxChunkLength)))
-    }
-
-    // pad the end with zeros, but make sure to not forget the extra bytes
-    switch (extraBytes) {
-      case 1:
-        temp = uint8[uint8.length - 1]
-        output += encode(temp >> 2)
-        output += encode((temp << 4) & 0x3F)
-        output += '=='
-        break
-      case 2:
-        temp = (uint8[uint8.length - 2] << 8) + (uint8[uint8.length - 1])
-        output += encode(temp >> 10)
-        output += encode((temp >> 4) & 0x3F)
-        output += encode((temp << 2) & 0x3F)
-        output += '='
-        break
-      default:
-        break
-    }
-
-    parts.push(output)
-
-    return parts.join('')
-  }
-
-  exports.toByteArray = b64ToByteArray
-  exports.fromByteArray = uint8ToBase64
-}(typeof exports === 'undefined' ? (this.base64js = {}) : exports))
-
-},{}],8:[function(require,module,exports){
+},{"base64-js":7,"ieee754":26,"isarray":10}],10:[function(require,module,exports){
 var toString = {}.toString;
 
 module.exports = Array.isArray || function (arr) {
   return toString.call(arr) == '[object Array]';
 };
 
-},{}],9:[function(require,module,exports){
+},{}],11:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer. All rights reserved.
@@ -1823,7 +2061,7 @@ function ccount(value, character) {
 
 module.exports = ccount;
 
-},{}],10:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 module.exports={
   "nbsp": " ",
   "iexcl": "¡",
@@ -2079,7 +2317,7 @@ module.exports={
   "euro": "€"
 }
 
-},{}],11:[function(require,module,exports){
+},{}],13:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer
@@ -2098,7 +2336,7 @@ module.exports={
 
 module.exports = require('./index.json');
 
-},{"./index.json":10}],12:[function(require,module,exports){
+},{"./index.json":12}],14:[function(require,module,exports){
 module.exports={
   "AElig": "Æ",
   "AMP": "&",
@@ -2208,7 +2446,7 @@ module.exports={
   "yuml": "ÿ"
 }
 
-},{}],13:[function(require,module,exports){
+},{}],15:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer
@@ -2227,7 +2465,7 @@ module.exports={
 
 module.exports = require('./index.json');
 
-},{"./index.json":12}],14:[function(require,module,exports){
+},{"./index.json":14}],16:[function(require,module,exports){
 module.exports={
   "AElig": "Æ",
   "AMP": "&",
@@ -4356,7 +4594,7 @@ module.exports={
   "zwnj": "‌"
 }
 
-},{}],15:[function(require,module,exports){
+},{}],17:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer
@@ -4375,7 +4613,7 @@ module.exports={
 
 module.exports = require('./index.json');
 
-},{"./index.json":14}],16:[function(require,module,exports){
+},{"./index.json":16}],18:[function(require,module,exports){
 module.exports={
   "0": "�",
   "128": "€",
@@ -4407,7 +4645,7 @@ module.exports={
   "159": "Ÿ"
 }
 
-},{}],17:[function(require,module,exports){
+},{}],19:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer
@@ -4426,7 +4664,7 @@ module.exports={
 
 module.exports = require('./index.json');
 
-},{"./index.json":16}],18:[function(require,module,exports){
+},{"./index.json":18}],20:[function(require,module,exports){
 (function (Buffer){
 var clone = (function() {
 'use strict';
@@ -4590,7 +4828,7 @@ if (typeof module === 'object' && module.exports) {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":6}],19:[function(require,module,exports){
+},{"buffer":9}],21:[function(require,module,exports){
 
 /**
  * slice() reference.
@@ -4886,7 +5124,7 @@ function error(err) {
   });
 }
 
-},{}],20:[function(require,module,exports){
+},{}],22:[function(require,module,exports){
 'use strict';
 
 /*
@@ -4916,7 +5154,7 @@ function collapse(value) {
 
 module.exports = collapse;
 
-},{}],21:[function(require,module,exports){
+},{}],23:[function(require,module,exports){
 
 /**
  * This is the web browser implementation of `debug()`.
@@ -5086,7 +5324,7 @@ function localstorage(){
   } catch (e) {}
 }
 
-},{"./debug":22}],22:[function(require,module,exports){
+},{"./debug":24}],24:[function(require,module,exports){
 
 /**
  * This is the common logic for both the Node.js and web browser
@@ -5285,7 +5523,7 @@ function coerce(val) {
   return val;
 }
 
-},{"ms":28}],23:[function(require,module,exports){
+},{"ms":30}],25:[function(require,module,exports){
 'use strict';
 
 var hasOwn = Object.prototype.hasOwnProperty;
@@ -5373,7 +5611,7 @@ module.exports = function extend() {
 };
 
 
-},{}],24:[function(require,module,exports){
+},{}],26:[function(require,module,exports){
 exports.read = function (buffer, offset, isLE, mLen, nBytes) {
   var e, m
   var eLen = nBytes * 8 - mLen - 1
@@ -5459,7 +5697,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}],25:[function(require,module,exports){
+},{}],27:[function(require,module,exports){
 if (typeof Object.create === 'function') {
   // implementation from standard node.js 'util' module
   module.exports = function inherits(ctor, superCtor) {
@@ -5484,7 +5722,7 @@ if (typeof Object.create === 'function') {
   }
 }
 
-},{}],26:[function(require,module,exports){
+},{}],28:[function(require,module,exports){
 'use strict';
 
 /**
@@ -5537,7 +5775,7 @@ function longestStreak(value, character) {
 
 module.exports = longestStreak;
 
-},{}],27:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 'use strict';
 
 /*
@@ -5823,7 +6061,7 @@ function markdownTable(table, options) {
 
 module.exports = markdownTable;
 
-},{}],28:[function(require,module,exports){
+},{}],30:[function(require,module,exports){
 /**
  * Helpers.
  */
@@ -5950,7 +6188,7 @@ function plural(ms, n, name) {
   return Math.ceil(ms / n) + ' ' + name + 's';
 }
 
-},{}],29:[function(require,module,exports){
+},{}],31:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer
@@ -6656,7 +6894,7 @@ function wrapper(value, options) {
 
 module.exports = wrapper;
 
-},{"character-entities":15,"character-entities-legacy":13,"character-reference-invalid":17}],30:[function(require,module,exports){
+},{"character-entities":17,"character-entities-legacy":15,"character-reference-invalid":19}],32:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015-2016 Titus Wormer
@@ -6692,7 +6930,7 @@ module.exports = unified({
     }
 });
 
-},{"./lib/escape.json":33,"./lib/parse.js":34,"./lib/stringify.js":35,"unified":37}],31:[function(require,module,exports){
+},{"./lib/escape.json":35,"./lib/parse.js":36,"./lib/stringify.js":37,"unified":48}],33:[function(require,module,exports){
 module.exports=[
     "article",
     "header",
@@ -6746,7 +6984,7 @@ module.exports=[
     "style"
 ]
 
-},{}],32:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015-2016 Titus Wormer
@@ -6797,7 +7035,7 @@ module.exports = {
     }
 };
 
-},{}],33:[function(require,module,exports){
+},{}],35:[function(require,module,exports){
 module.exports={
   "default": [
     "\\",
@@ -6874,7 +7112,7 @@ module.exports={
   ]
 }
 
-},{}],34:[function(require,module,exports){
+},{}],36:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015-2016 Titus Wormer
@@ -12995,7 +13233,7 @@ Parser.prototype.tokenizeFactory = tokenizeFactory;
 
 module.exports = Parser;
 
-},{"./block-elements.json":31,"./defaults.js":32,"./utilities.js":36,"extend":23,"parse-entities":29,"repeat-string":42,"trim":50,"trim-trailing-lines":49,"unist-util-remove-position":39,"vfile-location":41}],35:[function(require,module,exports){
+},{"./block-elements.json":33,"./defaults.js":34,"./utilities.js":38,"extend":25,"parse-entities":31,"repeat-string":39,"trim":46,"trim-trailing-lines":45,"unist-util-remove-position":49,"vfile-location":51}],37:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015-2016 Titus Wormer
@@ -15386,7 +15624,7 @@ compilerPrototype.compile = function () {
 
 module.exports = Compiler;
 
-},{"./defaults.js":32,"./utilities.js":36,"ccount":9,"extend":23,"longest-streak":26,"markdown-table":27,"parse-entities":29,"repeat-string":42,"stringify-entities":43}],36:[function(require,module,exports){
+},{"./defaults.js":34,"./utilities.js":38,"ccount":11,"extend":25,"longest-streak":28,"markdown-table":29,"parse-entities":31,"repeat-string":39,"stringify-entities":40}],38:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015-2016 Titus Wormer
@@ -15687,739 +15925,7 @@ exports.stateToggler = stateToggler;
 exports.mergeable = mergeable;
 exports.MERGEABLE_NODES = MERGEABLE_NODES;
 
-},{"collapse-white-space":20}],37:[function(require,module,exports){
-/**
- * @author Titus Wormer
- * @copyright 2015 Titus Wormer
- * @license MIT
- * @module unified
- * @fileoverview Parse / Transform / Compile / Repeat.
- */
-
-'use strict';
-
-/* eslint-env commonjs */
-
-/*
- * Dependencies.
- */
-
-var bail = require('bail');
-var ware = require('ware');
-var AttachWare = require('attach-ware')(ware);
-var VFile = require('vfile');
-var unherit = require('unherit');
-var extend = require('extend');
-
-/*
- * Processing pipeline.
- */
-
-var pipeline = ware()
-    .use(function (ctx) {
-        ctx.tree = ctx.context.parse(ctx.file, ctx.settings);
-    })
-    .use(function (ctx, next) {
-        ctx.context.run(ctx.tree, ctx.file, next);
-    })
-    .use(function (ctx) {
-        ctx.result = ctx.context.stringify(ctx.tree, ctx.file, ctx.settings);
-    });
-
-/**
- * Construct a new Processor class based on the
- * given options.
- *
- * @param {Object} options - Configuration.
- * @param {string} options.name - Private storage.
- * @param {Function} options.Parser - Class to turn a
- *   virtual file into a syntax tree.
- * @param {Function} options.Compiler - Class to turn a
- *   syntax tree into a string.
- * @return {Processor} - A new constructor.
- */
-function unified(options) {
-    var name = options.name;
-    var Parser = options.Parser;
-    var Compiler = options.Compiler;
-    var data = options.data;
-
-    /**
-     * Construct a Processor instance.
-     *
-     * @constructor
-     * @class {Processor}
-     */
-    function Processor(processor) {
-        var self = this;
-
-        if (!(self instanceof Processor)) {
-            return new Processor(processor);
-        }
-
-        self.ware = new AttachWare();
-        self.ware.context = self;
-
-        self.Parser = unherit(Parser);
-        self.Compiler = unherit(Compiler);
-
-        if (self.data) {
-            self.data = extend(true, {}, self.data);
-        }
-    }
-
-    /**
-     * Either return `context` if its an instance
-     * of `Processor` or construct a new `Processor`
-     * instance.
-     *
-     * @private
-     * @param {Processor?} [context] - Context object.
-     * @return {Processor} - Either `context` or a new
-     *   Processor instance.
-     */
-    function instance(context) {
-        return context instanceof Processor ? context : new Processor();
-    }
-
-    /**
-     * Attach a plugin.
-     *
-     * @this {Processor?} - Either a Processor instance or
-     *   the Processor constructor.
-     * @return {Processor} - Either `context` or a new
-     *   Processor instance.
-     */
-    function use() {
-        var self = instance(this);
-
-        self.ware.use.apply(self.ware, arguments);
-
-        return self;
-    }
-
-    /**
-     * Transform.
-     *
-     * @this {Processor?} - Either a Processor instance or
-     *   the Processor constructor.
-     * @param {Node} [node] - Syntax tree.
-     * @param {VFile?} [file] - Virtual file.
-     * @param {Function?} [done] - Callback.
-     * @return {Node} - `node`.
-     */
-    function run(node, file, done) {
-        var self = this;
-        var space;
-
-        if (typeof file === 'function') {
-            done = file;
-            file = null;
-        }
-
-        if (!file && node && !node.type) {
-            file = node;
-            node = null;
-        }
-
-        file = new VFile(file);
-        space = file.namespace(name);
-
-        if (!node) {
-            node = space.tree || node;
-        } else if (!space.tree) {
-            space.tree = node;
-        }
-
-        if (!node) {
-            throw new Error('Expected node, got ' + node);
-        }
-
-        done = typeof done === 'function' ? done : bail;
-
-        /*
-         * Only run when this is an instance of Processor,
-         * and when there are transformers.
-         */
-
-        if (self.ware && self.ware.fns) {
-            self.ware.run(node, file, done);
-        } else {
-            done(null, node, file);
-        }
-
-        return node;
-    }
-
-    /**
-     * Parse a file.
-     *
-     * Patches the parsed node onto the `name`
-     * namespace on the `type` property.
-     *
-     * @this {Processor?} - Either a Processor instance or
-     *   the Processor constructor.
-     * @param {string|VFile} value - Input to parse.
-     * @param {Object?} [settings] - Configuration.
-     * @return {Node} - `node`.
-     */
-    function parse(value, settings) {
-        var file = new VFile(value);
-        var CustomParser = (this && this.Parser) || Parser;
-        var node = new CustomParser(file, settings, instance(this)).parse();
-
-        file.namespace(name).tree = node;
-
-        return node;
-    }
-
-    /**
-     * Compile a file.
-     *
-     * Used the parsed node at the `name`
-     * namespace at `'tree'` when no node was given.
-     *
-     * @this {Processor?} - Either a Processor instance or
-     *   the Processor constructor.
-     * @param {Object} [node] - Syntax tree.
-     * @param {VFile} [file] - File with syntax tree.
-     * @param {Object?} [settings] - Configuration.
-     * @return {string} - Compiled `file`.
-     */
-    function stringify(node, file, settings) {
-        var CustomCompiler = (this && this.Compiler) || Compiler;
-        var space;
-
-        if (settings === null || settings === undefined) {
-            settings = file;
-            file = null;
-        }
-
-        if (!file && node && !node.type) {
-            file = node;
-            node = null;
-        }
-
-        file = new VFile(file);
-        space = file.namespace(name);
-
-        if (!node) {
-            node = space.tree || node;
-        } else if (!space.tree) {
-            space.tree = node;
-        }
-
-        if (!node) {
-            throw new Error('Expected node, got ' + node);
-        }
-
-        return new CustomCompiler(file, settings, instance(this)).compile();
-    }
-
-    /**
-     * Parse / Transform / Compile.
-     *
-     * @this {Processor?} - Either a Processor instance or
-     *   the Processor constructor.
-     * @param {string|VFile} value - Input to process.
-     * @param {Object?} [settings] - Configuration.
-     * @param {Function?} [done] - Callback.
-     * @return {string?} - Parsed document, when
-     *   transformation was async.
-     */
-    function process(value, settings, done) {
-        var self = instance(this);
-        var file = new VFile(value);
-        var result = null;
-
-        if (typeof settings === 'function') {
-            done = settings;
-            settings = null;
-        }
-
-        pipeline.run({
-            'context': self,
-            'file': file,
-            'settings': settings || {}
-        }, function (err, res) {
-            result = res && res.result;
-
-            if (done) {
-                done(err, file, result);
-            } else if (err) {
-                bail(err);
-            }
-        });
-
-        return result;
-    }
-
-    /*
-     * Methods / functions.
-     */
-
-    var proto = Processor.prototype;
-
-    Processor.use = proto.use = use;
-    Processor.parse = proto.parse = parse;
-    Processor.run = proto.run = run;
-    Processor.stringify = proto.stringify = stringify;
-    Processor.process = proto.process = process;
-    Processor.data = proto.data = data || null;
-
-    return Processor;
-}
-
-/*
- * Expose.
- */
-
-module.exports = unified;
-
-},{"attach-ware":38,"bail":5,"extend":23,"unherit":51,"vfile":52,"ware":53}],38:[function(require,module,exports){
-/**
- * @author Titus Wormer
- * @copyright 2015 Titus Wormer
- * @license MIT
- * @module attach-ware
- * @fileoverview Middleware with configuration.
- * @example
- *   var ware = require('attach-ware')(require('ware'));
- *
- *   var middleware = ware()
- *     .use(function (context, options) {
- *         if (!options.condition) return;
- *
- *         return function (req, res, next) {
- *           res.x = 'hello';
- *           next();
- *         };
- *     }, {
- *         'condition': true
- *     })
- *     .use(function (context, options) {
- *         if (!options.condition) return;
- *
- *         return function (req, res, next) {
- *           res.y = 'world';
- *           next();
- *         };
- *     }, {
- *         'condition': false
- *     });
- *
- *   middleware.run({}, {}, function (err, req, res) {
- *     res.x; // "hello"
- *     res.y; // undefined
- *   });
- */
-
-'use strict';
-
-/* eslint-env commonjs */
-
-var slice = [].slice;
-var unherit = require('unherit');
-
-/**
- * Clone `Ware` without affecting the super-class and
- * turn it into configurable middleware.
- *
- * @param {Function} Ware - Ware-like constructor.
- * @return {Function} AttachWare - Configurable middleware.
- */
-function patch(Ware) {
-    /*
-     * Methods.
-     */
-
-    var useFn = Ware.prototype.use;
-
-    /**
-     * @constructor
-     * @class {AttachWare}
-     */
-    var AttachWare = unherit(Ware);
-
-    AttachWare.prototype.foo = true;
-
-    /**
-     * Attach configurable middleware.
-     *
-     * @memberof {AttachWare}
-     * @this {AttachWare}
-     * @param {Function} attach - Attacher.
-     * @return {AttachWare} - `this`.
-     */
-    function use(attach) {
-        var self = this;
-        var params = slice.call(arguments, 1);
-        var index;
-        var length;
-        var fn;
-
-        /*
-         * Multiple attachers.
-         */
-
-        if ('length' in attach && typeof attach !== 'function') {
-            index = -1;
-            length = attach.length;
-
-            /*
-             * So, `attach[0]` is a function, meaning its
-             * either a list of `attachers` or its a `list`.
-             */
-
-            if (typeof attach[0] === 'function') {
-                if (
-                    (attach[1] !== null && attach[1] !== undefined) &&
-                    typeof attach[1] !== 'function'
-                ) {
-                    self.use.apply(self, attach);
-                } else {
-                    while (++index < length) {
-                        self.use.apply(self, [
-                            attach[index]
-                        ].concat(params));
-                    }
-                }
-            } else {
-                while (++index < length) {
-                    self.use(attach[index]);
-                }
-            }
-
-            return self;
-        }
-
-        /*
-         * Single attacher.
-         */
-
-        fn = attach.apply(null, [self.context || self].concat(params));
-
-        /*
-         * Store the attacher to not break `new Ware(otherWare)`
-         * functionality.
-         */
-
-        if (!self.attachers) {
-            self.attachers = [];
-        }
-
-        self.attachers.push(attach);
-
-        /*
-         * Pass `fn` to the original `Ware#use()`.
-         */
-
-        if (fn) {
-            useFn.call(self, fn);
-        }
-
-        return self;
-    }
-
-    AttachWare.prototype.use = use;
-
-    return function (fn) {
-        return new AttachWare(fn);
-    };
-}
-
-module.exports = patch;
-
-},{"unherit":51}],39:[function(require,module,exports){
-/**
- * @author Titus Wormer
- * @copyright 2016 Titus Wormer
- * @license MIT
- * @module unist:util:remove-position
- * @fileoverview Remove `position`s from a unist tree.
- */
-
-'use strict';
-
-/* eslint-env commonjs */
-
-/*
- * Dependencies.
- */
-
-var visit = require('unist-util-visit');
-
-/**
- * Remove `position`s from `tree`.
- *
- * @param {Node} tree - Node.
- * @return {Node} - Node without `position`s.
- */
-function removePosition(tree) {
-    visit(tree, function (node) {
-        node.position = undefined;
-    });
-
-    return tree;
-}
-
-/*
- * Expose.
- */
-
-module.exports = removePosition;
-
-},{"unist-util-visit":40}],40:[function(require,module,exports){
-/**
- * @author Titus Wormer
- * @copyright 2015 Titus Wormer. All rights reserved.
- * @module unist:util:visit
- * @fileoverview Utility to recursively walk over unist nodes.
- */
-
-'use strict';
-
-/**
- * Walk forwards.
- *
- * @param {Array.<*>} values - Things to iterate over,
- *   forwards.
- * @param {function(*, number): boolean} callback - Function
- *   to invoke.
- * @return {boolean} - False if iteration stopped.
- */
-function forwards(values, callback) {
-    var index = -1;
-    var length = values.length;
-
-    while (++index < length) {
-        if (callback(values[index], index) === false) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-/**
- * Walk backwards.
- *
- * @param {Array.<*>} values - Things to iterate over,
- *   backwards.
- * @param {function(*, number): boolean} callback - Function
- *   to invoke.
- * @return {boolean} - False if iteration stopped.
- */
-function backwards(values, callback) {
-    var index = values.length;
-    var length = -1;
-
-    while (--index > length) {
-        if (callback(values[index], index) === false) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-/**
- * Visit.
- *
- * @param {Node} tree - Root node
- * @param {string} [type] - Node type.
- * @param {function(node): boolean?} callback - Invoked
- *   with each found node.  Can return `false` to stop.
- * @param {boolean} [reverse] - By default, `visit` will
- *   walk forwards, when `reverse` is `true`, `visit`
- *   walks backwards.
- */
-function visit(tree, type, callback, reverse) {
-    var iterate;
-    var one;
-    var all;
-
-    if (typeof type === 'function') {
-        reverse = callback;
-        callback = type;
-        type = null;
-    }
-
-    iterate = reverse ? backwards : forwards;
-
-    /**
-     * Visit `children` in `parent`.
-     */
-    all = function (children, parent) {
-        return iterate(children, function (child, index) {
-            return child && one(child, index, parent);
-        });
-    };
-
-    /**
-     * Visit a single node.
-     */
-    one = function (node, index, parent) {
-        var result;
-
-        index = index || (parent ? 0 : null);
-
-        if (!type || node.type === type) {
-            result = callback(node, index, parent || null);
-        }
-
-        if (node.children && result !== false) {
-            return all(node.children, node);
-        }
-
-        return result;
-    };
-
-    one(tree);
-}
-
-/*
- * Expose.
- */
-
-module.exports = visit;
-
-},{}],41:[function(require,module,exports){
-/**
- * @author Titus Wormer
- * @copyright 2016 Titus Wormer
- * @license MIT
- * @module vfile:location
- * @fileoverview Convert between positions (line and
- *   column-based) and offsets (range-based) locations.
- */
-
-'use strict';
-
-/* eslint-env commonjs */
-
-/**
- * Get indices of line-breaks in `value`.
- *
- * @param {string} value - Value.
- * @return {Array.<number>} - List of indices of
- *   line-breaks.
- */
-function indices(value) {
-    var result = [];
-    var index = value.indexOf('\n');
-
-    while (index !== -1) {
-        result.push(index + 1);
-
-        index = value.indexOf('\n', index + 1);
-    }
-
-    result.push(value.length + 1);
-
-    return result;
-}
-
-/**
- * Factory to get the `offset` for a line and column-based
- * `position` in the bound indices.
- *
- * @param {Array.<number>} indices - Indices of
- *   line-breaks in `value`.
- * @return {Function} - Bound method.
- */
-function positionToOffsetFactory(indices) {
-    /**
-     * Get the `offset` for a line and column-based
-     * `position` in the bound indices.
-     *
-     * @param {Position} position - Object with `line` and
-     *   `column` properties.
-     * @return {number} - Offset. `-1` when given invalid
-     *   or out of bounds input.
-     */
-    function positionToOffset(position) {
-        var line = position && position.line;
-        var column = position && position.column;
-
-        if (!isNaN(line) && !isNaN(column) && line - 1 in indices) {
-            return ((indices[line - 2] || 0) + column - 1) || 0;
-        }
-
-        return -1;
-    }
-
-    return positionToOffset;
-}
-
-/**
- * Factory to get the line and column-based `position` for
- * `offset` in the bound indices.
- *
- * @param {Array.<number>} indices - Indices of
- *   line-breaks in `value`.
- * @return {Function} - Bound method.
- */
-function offsetToPositionFactory(indices) {
-    /**
-     * Get the line and column-based `position` for
-     * `offset` in the bound indices.
-     *
-     * @param {number} offset - Offset.
-     * @return {Position} - Object with `line`, `column`,
-     *   and `offset` properties based on the bound
-     *   `indices`.  An empty object when given invalid
-     *   or out of bounds input.
-     */
-    function offsetToPosition(offset) {
-        var index = -1;
-        var length = indices.length;
-
-        if (offset < 0) {
-            return {};
-        }
-
-        while (++index < length) {
-            if (indices[index] > offset) {
-                return {
-                    'line': index + 1,
-                    'column': (offset - (indices[index - 1] || 0)) + 1,
-                    'offset': offset
-                };
-            }
-        }
-
-        return {};
-    }
-
-    return offsetToPosition;
-}
-
-/**
- * Factory.
- *
- * @param {VFile|string} file - Virtual file or document.
- */
-function factory(file) {
-    var contents = indices(String(file));
-
-    /*
-     * Expose.
-     */
-
-    return {
-        'toPosition': offsetToPositionFactory(contents),
-        'toOffset': positionToOffsetFactory(contents)
-    };
-}
-
-/*
- * Expose.
- */
-
-module.exports = factory;
-
-},{}],42:[function(require,module,exports){
+},{"collapse-white-space":22}],39:[function(require,module,exports){
 /*!
  * repeat-string <https://github.com/jonschlinkert/repeat-string>
  *
@@ -16487,7 +15993,7 @@ function repeat(str, num) {
 var res = '';
 var cache;
 
-},{}],43:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer
@@ -16644,7 +16150,7 @@ encode.escape = escape;
 
 module.exports = encode;
 
-},{"./lib/expression.js":44,"character-entities-html4":11}],44:[function(require,module,exports){
+},{"./lib/expression.js":41,"character-entities-html4":13}],41:[function(require,module,exports){
 /* This script was generated by `script/generate-expression.js` */
 
 'use strict';
@@ -16654,7 +16160,7 @@ module.exports = encode;
 
 module.exports = /[ ¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿƒΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩαβγδεζηθικλμνξοπρςστυφχψωϑϒϖ•…′″‾⁄℘ℑℜ™ℵ←↑→↓↔↵⇐⇑⇒⇓⇔∀∂∃∅∇∈∉∋∏∑−∗√∝∞∠∧∨∩∪∫∴∼≅≈≠≡≤≥⊂⊃⊄⊆⊇⊕⊗⊥⋅⌈⌉⌊⌋〈〉◊♠♣♥♦ŒœŠšŸˆ˜   ‌‍‎‏–—‘’‚“”„†‡‰‹›€]/g;
 
-},{}],45:[function(require,module,exports){
+},{}],42:[function(require,module,exports){
 "use strict";
 
 var StructuredSource = require('./structured-source.js')["default"];
@@ -16664,7 +16170,7 @@ module.exports = StructuredSource;
 
 /* vim: set sw=4 ts=4 et tw=80 : */
 
-},{"./structured-source.js":46}],46:[function(require,module,exports){
+},{"./structured-source.js":43}],43:[function(require,module,exports){
 "use strict";
 
 var _classProps = function (child, staticProps, instanceProps) {
@@ -16749,91 +16255,7 @@ var StructuredSource = (function () {
 
 exports["default"] = StructuredSource;
 
-},{"boundary":47}],47:[function(require,module,exports){
-"use strict";
-
-/*
-  Copyright (C) 2014 Yusuke Suzuki <utatane.tea@gmail.com>
-
-  Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions are met:
-
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in the
-      documentation and/or other materials provided with the distribution.
-
-  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-  ARE DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
-  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-  (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-  ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
-  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
-
-function compare(v1, v2) {
-  return v1 < v2;
-}
-
-function upperBound(array, value, comp) {
-  if (comp === undefined) comp = compare;
-  return (function () {
-    var len = array.length;
-    var i = 0;
-
-    while (len) {
-      var diff = len >>> 1;
-      var cursor = i + diff;
-      if (comp(value, array[cursor])) {
-        len = diff;
-      } else {
-        i = cursor + 1;
-        len -= diff + 1;
-      }
-    }
-    return i;
-  })();
-}
-
-function lowerBound(array, value, comp) {
-  if (comp === undefined) comp = compare;
-  return (function () {
-    var len = array.length;
-    var i = 0;
-
-    while (len) {
-      var diff = len >>> 1;
-      var cursor = i + diff;
-      if (comp(array[cursor], value)) {
-        i = cursor + 1;
-        len -= diff + 1;
-      } else {
-        len = diff;
-      }
-    }
-    return i;
-  })();
-}
-
-function binarySearch(array, value, comp) {
-  if (comp === undefined) comp = compare;
-  return (function () {
-    var cursor = lowerBound(array, value, comp);
-    return cursor !== array.length && !comp(value, array[cursor]);
-  })();
-}
-
-exports.compare = compare;
-exports.lowerBound = lowerBound;
-exports.upperBound = upperBound;
-exports.binarySearch = binarySearch;
-
-},{}],48:[function(require,module,exports){
+},{"boundary":8}],44:[function(require,module,exports){
 var traverse = module.exports = function (obj) {
     return new Traverse(obj);
 };
@@ -17149,7 +16571,7 @@ var hasOwnProperty = Object.hasOwnProperty || function (obj, key) {
     return key in obj;
 };
 
-},{}],49:[function(require,module,exports){
+},{}],45:[function(require,module,exports){
 'use strict';
 
 /*
@@ -17187,7 +16609,7 @@ function trimTrailingLines(value) {
 
 module.exports = trimTrailingLines;
 
-},{}],50:[function(require,module,exports){
+},{}],46:[function(require,module,exports){
 
 exports = module.exports = trim;
 
@@ -17203,7 +16625,7 @@ exports.right = function(str){
   return str.replace(/\s*$/, '');
 };
 
-},{}],51:[function(require,module,exports){
+},{}],47:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer
@@ -17290,7 +16712,585 @@ function unherit(Super) {
 
 module.exports = unherit;
 
-},{"clone":18,"inherits":25}],52:[function(require,module,exports){
+},{"clone":20,"inherits":27}],48:[function(require,module,exports){
+/**
+ * @author Titus Wormer
+ * @copyright 2015 Titus Wormer
+ * @license MIT
+ * @module unified
+ * @fileoverview Parse / Transform / Compile / Repeat.
+ */
+
+'use strict';
+
+/* eslint-env commonjs */
+
+/*
+ * Dependencies.
+ */
+
+var bail = require('bail');
+var ware = require('ware');
+var AttachWare = require('attach-ware')(ware);
+var VFile = require('vfile');
+var unherit = require('unherit');
+var extend = require('extend');
+
+/*
+ * Processing pipeline.
+ */
+
+var pipeline = ware()
+    .use(function (ctx) {
+        ctx.tree = ctx.context.parse(ctx.file, ctx.settings);
+    })
+    .use(function (ctx, next) {
+        ctx.context.run(ctx.tree, ctx.file, next);
+    })
+    .use(function (ctx) {
+        ctx.result = ctx.context.stringify(ctx.tree, ctx.file, ctx.settings);
+    });
+
+/**
+ * Construct a new Processor class based on the
+ * given options.
+ *
+ * @param {Object} options - Configuration.
+ * @param {string} options.name - Private storage.
+ * @param {Function} options.Parser - Class to turn a
+ *   virtual file into a syntax tree.
+ * @param {Function} options.Compiler - Class to turn a
+ *   syntax tree into a string.
+ * @return {Processor} - A new constructor.
+ */
+function unified(options) {
+    var name = options.name;
+    var Parser = options.Parser;
+    var Compiler = options.Compiler;
+    var data = options.data;
+
+    /**
+     * Construct a Processor instance.
+     *
+     * @constructor
+     * @class {Processor}
+     */
+    function Processor(processor) {
+        var self = this;
+
+        if (!(self instanceof Processor)) {
+            return new Processor(processor);
+        }
+
+        self.ware = new AttachWare();
+        self.ware.context = self;
+
+        self.Parser = unherit(Parser);
+        self.Compiler = unherit(Compiler);
+
+        if (self.data) {
+            self.data = extend(true, {}, self.data);
+        }
+    }
+
+    /**
+     * Either return `context` if its an instance
+     * of `Processor` or construct a new `Processor`
+     * instance.
+     *
+     * @private
+     * @param {Processor?} [context] - Context object.
+     * @return {Processor} - Either `context` or a new
+     *   Processor instance.
+     */
+    function instance(context) {
+        return context instanceof Processor ? context : new Processor();
+    }
+
+    /**
+     * Attach a plugin.
+     *
+     * @this {Processor?} - Either a Processor instance or
+     *   the Processor constructor.
+     * @return {Processor} - Either `context` or a new
+     *   Processor instance.
+     */
+    function use() {
+        var self = instance(this);
+
+        self.ware.use.apply(self.ware, arguments);
+
+        return self;
+    }
+
+    /**
+     * Transform.
+     *
+     * @this {Processor?} - Either a Processor instance or
+     *   the Processor constructor.
+     * @param {Node} [node] - Syntax tree.
+     * @param {VFile?} [file] - Virtual file.
+     * @param {Function?} [done] - Callback.
+     * @return {Node} - `node`.
+     */
+    function run(node, file, done) {
+        var self = this;
+        var space;
+
+        if (typeof file === 'function') {
+            done = file;
+            file = null;
+        }
+
+        if (!file && node && !node.type) {
+            file = node;
+            node = null;
+        }
+
+        file = new VFile(file);
+        space = file.namespace(name);
+
+        if (!node) {
+            node = space.tree || node;
+        } else if (!space.tree) {
+            space.tree = node;
+        }
+
+        if (!node) {
+            throw new Error('Expected node, got ' + node);
+        }
+
+        done = typeof done === 'function' ? done : bail;
+
+        /*
+         * Only run when this is an instance of Processor,
+         * and when there are transformers.
+         */
+
+        if (self.ware && self.ware.fns) {
+            self.ware.run(node, file, done);
+        } else {
+            done(null, node, file);
+        }
+
+        return node;
+    }
+
+    /**
+     * Parse a file.
+     *
+     * Patches the parsed node onto the `name`
+     * namespace on the `type` property.
+     *
+     * @this {Processor?} - Either a Processor instance or
+     *   the Processor constructor.
+     * @param {string|VFile} value - Input to parse.
+     * @param {Object?} [settings] - Configuration.
+     * @return {Node} - `node`.
+     */
+    function parse(value, settings) {
+        var file = new VFile(value);
+        var CustomParser = (this && this.Parser) || Parser;
+        var node = new CustomParser(file, settings, instance(this)).parse();
+
+        file.namespace(name).tree = node;
+
+        return node;
+    }
+
+    /**
+     * Compile a file.
+     *
+     * Used the parsed node at the `name`
+     * namespace at `'tree'` when no node was given.
+     *
+     * @this {Processor?} - Either a Processor instance or
+     *   the Processor constructor.
+     * @param {Object} [node] - Syntax tree.
+     * @param {VFile} [file] - File with syntax tree.
+     * @param {Object?} [settings] - Configuration.
+     * @return {string} - Compiled `file`.
+     */
+    function stringify(node, file, settings) {
+        var CustomCompiler = (this && this.Compiler) || Compiler;
+        var space;
+
+        if (settings === null || settings === undefined) {
+            settings = file;
+            file = null;
+        }
+
+        if (!file && node && !node.type) {
+            file = node;
+            node = null;
+        }
+
+        file = new VFile(file);
+        space = file.namespace(name);
+
+        if (!node) {
+            node = space.tree || node;
+        } else if (!space.tree) {
+            space.tree = node;
+        }
+
+        if (!node) {
+            throw new Error('Expected node, got ' + node);
+        }
+
+        return new CustomCompiler(file, settings, instance(this)).compile();
+    }
+
+    /**
+     * Parse / Transform / Compile.
+     *
+     * @this {Processor?} - Either a Processor instance or
+     *   the Processor constructor.
+     * @param {string|VFile} value - Input to process.
+     * @param {Object?} [settings] - Configuration.
+     * @param {Function?} [done] - Callback.
+     * @return {string?} - Parsed document, when
+     *   transformation was async.
+     */
+    function process(value, settings, done) {
+        var self = instance(this);
+        var file = new VFile(value);
+        var result = null;
+
+        if (typeof settings === 'function') {
+            done = settings;
+            settings = null;
+        }
+
+        pipeline.run({
+            'context': self,
+            'file': file,
+            'settings': settings || {}
+        }, function (err, res) {
+            result = res && res.result;
+
+            if (done) {
+                done(err, file, result);
+            } else if (err) {
+                bail(err);
+            }
+        });
+
+        return result;
+    }
+
+    /*
+     * Methods / functions.
+     */
+
+    var proto = Processor.prototype;
+
+    Processor.use = proto.use = use;
+    Processor.parse = proto.parse = parse;
+    Processor.run = proto.run = run;
+    Processor.stringify = proto.stringify = stringify;
+    Processor.process = proto.process = process;
+    Processor.data = proto.data = data || null;
+
+    return Processor;
+}
+
+/*
+ * Expose.
+ */
+
+module.exports = unified;
+
+},{"attach-ware":5,"bail":6,"extend":25,"unherit":47,"vfile":52,"ware":53}],49:[function(require,module,exports){
+/**
+ * @author Titus Wormer
+ * @copyright 2016 Titus Wormer
+ * @license MIT
+ * @module unist:util:remove-position
+ * @fileoverview Remove `position`s from a unist tree.
+ */
+
+'use strict';
+
+/* eslint-env commonjs */
+
+/*
+ * Dependencies.
+ */
+
+var visit = require('unist-util-visit');
+
+/**
+ * Remove `position`s from `tree`.
+ *
+ * @param {Node} tree - Node.
+ * @return {Node} - Node without `position`s.
+ */
+function removePosition(tree) {
+    visit(tree, function (node) {
+        node.position = undefined;
+    });
+
+    return tree;
+}
+
+/*
+ * Expose.
+ */
+
+module.exports = removePosition;
+
+},{"unist-util-visit":50}],50:[function(require,module,exports){
+/**
+ * @author Titus Wormer
+ * @copyright 2015 Titus Wormer. All rights reserved.
+ * @module unist:util:visit
+ * @fileoverview Utility to recursively walk over unist nodes.
+ */
+
+'use strict';
+
+/**
+ * Walk forwards.
+ *
+ * @param {Array.<*>} values - Things to iterate over,
+ *   forwards.
+ * @param {function(*, number): boolean} callback - Function
+ *   to invoke.
+ * @return {boolean} - False if iteration stopped.
+ */
+function forwards(values, callback) {
+    var index = -1;
+    var length = values.length;
+
+    while (++index < length) {
+        if (callback(values[index], index) === false) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Walk backwards.
+ *
+ * @param {Array.<*>} values - Things to iterate over,
+ *   backwards.
+ * @param {function(*, number): boolean} callback - Function
+ *   to invoke.
+ * @return {boolean} - False if iteration stopped.
+ */
+function backwards(values, callback) {
+    var index = values.length;
+    var length = -1;
+
+    while (--index > length) {
+        if (callback(values[index], index) === false) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Visit.
+ *
+ * @param {Node} tree - Root node
+ * @param {string} [type] - Node type.
+ * @param {function(node): boolean?} callback - Invoked
+ *   with each found node.  Can return `false` to stop.
+ * @param {boolean} [reverse] - By default, `visit` will
+ *   walk forwards, when `reverse` is `true`, `visit`
+ *   walks backwards.
+ */
+function visit(tree, type, callback, reverse) {
+    var iterate;
+    var one;
+    var all;
+
+    if (typeof type === 'function') {
+        reverse = callback;
+        callback = type;
+        type = null;
+    }
+
+    iterate = reverse ? backwards : forwards;
+
+    /**
+     * Visit `children` in `parent`.
+     */
+    all = function (children, parent) {
+        return iterate(children, function (child, index) {
+            return child && one(child, index, parent);
+        });
+    };
+
+    /**
+     * Visit a single node.
+     */
+    one = function (node, index, parent) {
+        var result;
+
+        index = index || (parent ? 0 : null);
+
+        if (!type || node.type === type) {
+            result = callback(node, index, parent || null);
+        }
+
+        if (node.children && result !== false) {
+            return all(node.children, node);
+        }
+
+        return result;
+    };
+
+    one(tree);
+}
+
+/*
+ * Expose.
+ */
+
+module.exports = visit;
+
+},{}],51:[function(require,module,exports){
+/**
+ * @author Titus Wormer
+ * @copyright 2016 Titus Wormer
+ * @license MIT
+ * @module vfile:location
+ * @fileoverview Convert between positions (line and
+ *   column-based) and offsets (range-based) locations.
+ */
+
+'use strict';
+
+/* eslint-env commonjs */
+
+/**
+ * Get indices of line-breaks in `value`.
+ *
+ * @param {string} value - Value.
+ * @return {Array.<number>} - List of indices of
+ *   line-breaks.
+ */
+function indices(value) {
+    var result = [];
+    var index = value.indexOf('\n');
+
+    while (index !== -1) {
+        result.push(index + 1);
+
+        index = value.indexOf('\n', index + 1);
+    }
+
+    result.push(value.length + 1);
+
+    return result;
+}
+
+/**
+ * Factory to get the `offset` for a line and column-based
+ * `position` in the bound indices.
+ *
+ * @param {Array.<number>} indices - Indices of
+ *   line-breaks in `value`.
+ * @return {Function} - Bound method.
+ */
+function positionToOffsetFactory(indices) {
+    /**
+     * Get the `offset` for a line and column-based
+     * `position` in the bound indices.
+     *
+     * @param {Position} position - Object with `line` and
+     *   `column` properties.
+     * @return {number} - Offset. `-1` when given invalid
+     *   or out of bounds input.
+     */
+    function positionToOffset(position) {
+        var line = position && position.line;
+        var column = position && position.column;
+
+        if (!isNaN(line) && !isNaN(column) && line - 1 in indices) {
+            return ((indices[line - 2] || 0) + column - 1) || 0;
+        }
+
+        return -1;
+    }
+
+    return positionToOffset;
+}
+
+/**
+ * Factory to get the line and column-based `position` for
+ * `offset` in the bound indices.
+ *
+ * @param {Array.<number>} indices - Indices of
+ *   line-breaks in `value`.
+ * @return {Function} - Bound method.
+ */
+function offsetToPositionFactory(indices) {
+    /**
+     * Get the line and column-based `position` for
+     * `offset` in the bound indices.
+     *
+     * @param {number} offset - Offset.
+     * @return {Position} - Object with `line`, `column`,
+     *   and `offset` properties based on the bound
+     *   `indices`.  An empty object when given invalid
+     *   or out of bounds input.
+     */
+    function offsetToPosition(offset) {
+        var index = -1;
+        var length = indices.length;
+
+        if (offset < 0) {
+            return {};
+        }
+
+        while (++index < length) {
+            if (indices[index] > offset) {
+                return {
+                    'line': index + 1,
+                    'column': (offset - (indices[index - 1] || 0)) + 1,
+                    'offset': offset
+                };
+            }
+        }
+
+        return {};
+    }
+
+    return offsetToPosition;
+}
+
+/**
+ * Factory.
+ *
+ * @param {VFile|string} file - Virtual file or document.
+ */
+function factory(file) {
+    var contents = indices(String(file));
+
+    /*
+     * Expose.
+     */
+
+    return {
+        'toPosition': offsetToPositionFactory(contents),
+        'toOffset': positionToOffsetFactory(contents)
+    };
+}
+
+/*
+ * Expose.
+ */
+
+module.exports = factory;
+
+},{}],52:[function(require,module,exports){
 /**
  * @author Titus Wormer
  * @copyright 2015 Titus Wormer
@@ -18136,4 +18136,4 @@ function once(fn) {
   };
 }
 
-},{"co":19}]},{},[1]);
+},{"co":21}]},{},[1]);
